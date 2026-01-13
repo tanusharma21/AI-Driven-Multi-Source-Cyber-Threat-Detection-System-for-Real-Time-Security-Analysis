@@ -1,0 +1,2 @@
+# AI-Driven-Multi-Source-Cyber-Threat-Detection-System-for-Real-Time-Security-Analysis
+This project proposes an intelligent AI-driven cybersecurity framework that analyzes URLs, APKs, documents, images, ZIP files, and network traffic. It detects malware, anomalies, and third-party risks, performs real-time intrusion detection, classifies inputs as safe or malicious, and provides explainable threat insights.
