@@ -6,18 +6,18 @@ from utils import (predict_apk, predict_pdf, predict_url,
                    get_dashboard_stats, get_ai_insight)
 import uvicorn
 import secrets
-from pymongo import MongoClient
+import os
 from datetime import datetime
 
-app = FastAPI(title="⟬⟭ AEGIS ⟭⟬", version="1.0.0")
+# ── Optional MongoDB ───────────────────────────────────────────────────────────
+db = None
+scans_col  = None
+tokens_col = None
 
-app.add_middleware(CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-# ── MongoDB Connection ─────────────────────────────────────────────────────────
 try:
-    client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=3000)
+    from pymongo import MongoClient
+    MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
     client.server_info()
     db = client["aegis"]
     scans_col  = db["scans"]
@@ -25,19 +25,39 @@ try:
     print("[OK] MongoDB connected!")
 except Exception as e:
     print(f"[WARN] MongoDB not available: {e} — running without DB")
-    db = None
-    scans_col  = None
-    tokens_col = None
+
+# ── FastAPI App ────────────────────────────────────────────────────────────────
+app = FastAPI(title="⟬⟭ AEGIS ⟭⟬", version="1.0.0")
+
+# ── CORS ───────────────────────────────────────────────────────────────────────
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000"
+).split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── Auth Config ────────────────────────────────────────────────────────────────
-ADMIN_USERNAME = "ame"
-ADMIN_PASSWORD = "wabisabi.11.11"
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "ame")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "wabisabi.11.11")
 VALID_TOKENS: set = set()
 
-# ── Auth Models ────────────────────────────────────────────────────────────────
+# ── Pydantic Models ────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+class URLRequest(BaseModel):
+    url: str
+
+class NetworkRequest(BaseModel):
+    features: list
 
 # ── Auth Dependency ────────────────────────────────────────────────────────────
 def get_current_user(request: Request):
@@ -75,11 +95,12 @@ def stats():
     base = get_dashboard_stats()
     if scans_col is not None:
         try:
-            base["total_scans"]     = scans_col.count_documents({})
-            base["malicious_files"] = scans_col.count_documents({"label": "Malicious"})
-            base["suspicious_urls"] = scans_col.count_documents({"label": "Suspicious", "type": "URL"})
-            base["intrusion_alerts"]= scans_col.count_documents({"label": "Malicious", "type": "Network"})
-        except: pass
+            base["total_scans"]      = scans_col.count_documents({})
+            base["malicious_files"]  = scans_col.count_documents({"label": "Malicious"})
+            base["suspicious_urls"]  = scans_col.count_documents({"label": "Suspicious", "type": "URL"})
+            base["intrusion_alerts"] = scans_col.count_documents({"label": "Malicious", "type": "Network"})
+        except Exception:
+            pass
     return base
 
 @app.get("/api/scans")
@@ -89,30 +110,42 @@ def get_scans(token: str = Depends(get_current_user)):
     try:
         scans = list(scans_col.find({}, {"_id": 0}).sort("time", -1).limit(50))
         return scans
-    except:
+    except Exception:
         return []
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mongodb": db is not None}
+    from utils import net_model, apk_model, url_model, pdf_model
+    return {
+        "status": "ok",
+        "mongodb": db is not None,
+        "models": {
+            "network": net_model is not None,
+            "apk":     apk_model is not None,
+            "url":     url_model is not None,
+            "pdf":     pdf_model is not None,
+        }
+    }
 
-# ── Protected Routes ───────────────────────────────────────────────────────────
-class URLRequest(BaseModel):
-    url: str
-
-class NetworkRequest(BaseModel):
-    features: list
-
+# ── Helper: persist scan ───────────────────────────────────────────────────────
 def save_scan(data: dict):
     if scans_col is not None:
         try:
-            scans_col.insert_one({**data, "time": datetime.now().strftime("%H:%M:%S"), "_id_str": str(datetime.now().timestamp())})
-        except: pass
+            doc = {**data, "time": datetime.now().strftime("%H:%M:%S")}
+            doc.pop("_id", None)
+            scans_col.insert_one(doc)
+        except Exception:
+            pass
 
+# ── Protected Scan Routes ──────────────────────────────────────────────────────
 @app.post("/api/scan/file")
-async def scan_file(file: UploadFile = File(...), token: str = Depends(get_current_user)):
+async def scan_file(
+    file: UploadFile = File(...),
+    token: str = Depends(get_current_user)
+):
     contents = await file.read()
-    ext = file.filename.rsplit(".", 1)[-1].lower()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+
     if ext == "apk":
         result = predict_apk(contents, file.filename)
     elif ext == "pdf":
@@ -122,25 +155,36 @@ async def scan_file(file: UploadFile = File(...), token: str = Depends(get_curre
     elif ext == "zip":
         result = predict_zip(contents, file.filename)
     else:
-        raise HTTPException(400, f"Unsupported: .{ext} — use .apk, .pdf, .jpg, .png or .zip")
+        raise HTTPException(
+            400,
+            f"Unsupported file type: .{ext} — use .apk, .pdf, image (.jpg/.png/…) or .zip"
+        )
+
     result["insight"] = get_ai_insight(result["type"], result["label"], result["confidence"])
     save_scan({**result, "file": file.filename})
     return result
 
 @app.post("/api/scan/url")
 def scan_url(req: URLRequest, token: str = Depends(get_current_user)):
-    if not req.url.strip(): raise HTTPException(400, "URL is empty")
-    result = predict_url(req.url.strip())
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(400, "URL is empty")
+    result = predict_url(url)
     result["insight"] = get_ai_insight("URL", result["label"], result["confidence"])
     save_scan({**result, "type": "URL"})
     return result
 
 @app.post("/api/scan/network")
 def scan_network(req: NetworkRequest, token: str = Depends(get_current_user)):
+    if not req.features:
+        raise HTTPException(400, "Features list is empty")
     result = predict_network(req.features)
     result["insight"] = get_ai_insight("Network", result["label"], result["confidence"])
     save_scan({**result, "type": "Network"})
     return result
 
+# ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host=host, port=port, reload=False)
