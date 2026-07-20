@@ -338,6 +338,19 @@ function useApp() {
 
   useEffect(()=>{loadStats();const id=setInterval(loadStats,15000);return()=>clearInterval(id);},[loadStats]);
 
+  const loadHistory=useCallback(async()=>{
+    try{
+      const r=await apiFetch('/api/scans');
+      if(!r.ok) return;
+      const data=await r.json();
+      if(Array.isArray(data)) setScanHistory(data);
+    }catch{
+      /* keep whatever local history exists if the fetch fails */
+    }
+  },[]);
+
+  useEffect(()=>{loadHistory();},[loadHistory]);
+
   const addToLog=(insight,source)=>{
     if(!insight)return;
     setAiLog(p=>[{...insight,source,id:Date.now()},...p].slice(0,20));
@@ -544,6 +557,19 @@ function FileScanner({app}) {
   const [history,setHistory]=useState([]);
   const fRef=useRef();
 
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const r=await apiFetch('/api/scans');
+        if(!r.ok) return;
+        const data=await r.json();
+        if(Array.isArray(data)) setHistory(data.filter(s=>s.file).slice(0,20));
+      }catch{
+        /* keep empty history if this fails, page still works */
+      }
+    })();
+  },[]);
+
   const handleFile=async(e)=>{
     const f=e.target.files[0]; if(!f)return; e.target.value='';
     const ext=f.name.split('.').pop().toLowerCase();
@@ -666,6 +692,19 @@ function URLAnalyzer({app}) {
   const [input,setInput]=useState('');
   const [state,setState]=useState({loading:false,result:null,insight:null});
   const [history,setHistory]=useState([]);
+
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const r=await apiFetch('/api/scans');
+        if(!r.ok) return;
+        const data=await r.json();
+        if(Array.isArray(data)) setHistory(data.filter(s=>s.url).slice(0,20));
+      }catch{
+        /* keep empty history if this fails, page still works */
+      }
+    })();
+  },[]);
 
   const scan=async()=>{
     const url=input.trim(); if(!url)return;
