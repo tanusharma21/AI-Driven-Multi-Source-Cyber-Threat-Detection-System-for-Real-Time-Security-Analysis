@@ -137,8 +137,11 @@ def save_scan(data: dict):
             doc = {**data, "time": datetime.now().strftime("%H:%M:%S")}
             doc.pop("_id", None)
             scans_col.insert_one(doc)
-        except Exception:
-            pass
+            print("[OK] Scan saved to MongoDB")
+        except Exception as e:
+            print(f"[ERROR] Failed to save scan: {e}")
+    else:
+        print("[WARN] scans_col is None - MongoDB not connected, scan not saved")
 
 # ── Protected Scan Routes ──────────────────────────────────────────────────────
 @app.post("/api/scan/file")
